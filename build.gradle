@@ -1,0 +1,14 @@
+apply from: "modpack.gradle"
+
+modpack {
+    name 'TestPack'
+    authors 'canitzp'
+    gameversions '1.12.2'
+    forge '2746'
+    releasetypes 'RELEASE'
+
+    add 'actually-additions'
+        filtername 'r140'
+    add 'jei'
+    add 'tumat'
+}

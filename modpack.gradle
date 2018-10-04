@@ -1,0 +1,586 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        google()
+        jcenter()
+    }
+    dependencies {
+        classpath gradleApi()
+        classpath group: 'commons-io', name: 'commons-io', version: '2.6'
+        classpath group: 'com.google.code.gson', name: 'gson', version: '2.8.5'
+        classpath group: 'org.apache.commons', name: 'commons-lang3', version: '3.8.1'
+        classpath group: 'net.lingala.zip4j', name: 'zip4j', version: '1.3.2'
+    }
+}
+
+apply plugin: 'idea'
+apply plugin: 'groovy'
+apply plugin: 'java'
+apply plugin: GPlugin
+
+ext{
+    projectName = "testpack"
+}
+
+task deployClient() << {
+    javaexec{
+        main = "-jar"
+        args = [
+                "voodoo.jar",
+                "pack",
+                "sk",
+                "${projectName}.lock.json"
+        ]
+    }
+}
+
+task deployServer() << {
+    javaexec{
+        main = "-jar"
+        args = [
+                "voodoo.jar",
+                "pack",
+                "server",
+                "${projectName}.lock.json"
+        ]
+    }
+    javaexec{
+        workingDir = new File("server_" + projectName.toLowerCase(Locale.ENGLISH))
+        main = "-jar"
+        args = [
+                "server-installer.jar",
+                "server"
+        ]
+    }
+}
+
+task deployBoth {
+    finalizedBy deployClient, deployServer
+
+}
+
+task testMMC << {
+    javaexec{
+        main = "-jar"
+        args = [
+                "voodoo.jar",
+                "test",
+                "mmc",
+                "${projectName}.lock.json",
+                "--clean"
+        ]
+    }
+}
+
+task packMMC << {
+    javaexec{
+        main = "-jar"
+        args = [
+                "voodoo.jar",
+                "pack",
+                "mmc",
+                "${projectName}.lock.json"
+        ]
+    }
+}
+
+task clearVoodooCache << {
+    File cacheDir = null
+    String osName = System.properties['os.name'].toLowerCase()
+    if (osName.contains('windows')) {
+        cacheDir = new File(System.getenv("APPDATA"), "voodoo" + File.separator + "Cache")
+    } else if(osName.contains("linux")){
+        cacheDir = new File(System.getenv("user.dir"), ".voodoo" + File.separator + "cache")
+    } else if(osName.contains("osx")){
+        cacheDir = new File(System.getenv("user.dir"), "Library" + File.separator + ".voodoo" + File.separator + "Caches")
+    }
+    if(cacheDir != null){
+        if(cacheDir.exists()){
+            FileUtils.deleteDirectory(cacheDir)
+        }
+    } else {
+        println 'OS unknown or undetectable'
+    }
+}
+
+class GPlugin implements Plugin<Project> {
+
+    @Override
+    void apply(Project target) {
+        target.getTasks().create("modpack", GTask.class)
+    }
+
+}
+
+class GTask extends DefaultTask {
+
+    private Map<String, Object> generalInformation = new HashMap<>()
+    private List<Map<String, Object>> ids = new ArrayList<>()
+    private Map<String, Object> current
+
+    void name(String modpackName) {
+        generalInformation.put("ModpackName", modpackName)
+    }
+
+    void authors(String... authors) {
+        generalInformation.put("Authors", Arrays.asList(authors))
+    }
+
+    void gameversions(String... gameversions) {
+        generalInformation.put("GameVersion", Arrays.asList(gameversions))
+    }
+
+    void forge(String forgeVersion) {
+        generalInformation.put("ForgeVersion", forgeVersion)
+    }
+
+    void releasetypes(String... releaseTypes) {
+        if (current != null) {
+            current.put("ReleaseTypes", releaseTypes)
+        } else {
+            generalInformation.put("ReleaseTypes", releaseTypes)
+        }
+    }
+
+    void add(int id) {
+        if (current != null) {
+            ids.add(current)
+        }
+        current = new HashMap<>()
+        current.put("Id", id)
+    }
+
+    void add(String slug) {
+        if (current != null) {
+            ids.add(current)
+        }
+        current = new HashMap<>()
+        current.put("Slug", slug)
+    }
+
+    void filtername(String filterName) {
+        if (current != null) {
+            current.put("FilterName", filterName)
+        }
+    }
+    
+    @TaskAction
+    void exec() {
+        if (current != null) {
+            ids.add(current)
+        }
+        println ids
+        Modpack mp = Modpack.loadFromMaps(generalInformation, ids)
+
+        File lockJsonFile = new File(mp.getId() + ".lock.json")
+        if(lockJsonFile.exists()){
+            lockJsonFile.delete()
+        }
+        File lockHJsonFile = new File(mp.getId() + ".pack.hjson")
+        if(lockHJsonFile.exists()){
+            lockHJsonFile.delete()
+        }
+        File modsDir = new File("src", "mods")
+        if(modsDir.exists()){
+            FileUtils.deleteDirectory(modsDir)
+        }
+        modsDir.mkdirs()
+        File modsDirClient = new File(modsDir, "_CLIENT")
+        if(modsDirClient.exists()){
+            FileUtils.deleteDirectory(modsDirClient)
+        }
+        modsDirClient.mkdirs()
+        File modsDirServer = new File(modsDir, "_SERVER")
+        if(modsDirServer.exists()){
+            FileUtils.deleteDirectory(modsDirServer)
+        }
+        modsDirServer.mkdirs()
+        
+        LockJson lock = new LockJson(mp)
+        FileWriter fw = new FileWriter(lockJsonFile)
+        Util.gson.toJson(lock, LockHJson.class, fw)
+        fw.close()
+        fw = new FileWriter(lockHJsonFile)
+        Util.gson.toJson(lock, LockJson.class, fw)
+        fw.close()
+        
+        for(ModpackMod mod : mp.allMods){
+            File outDir = mod.server ? mod.client ? modsDir : modsDirServer : mod.client ? modsDirClient : modsDir
+            
+            File outLockHJson = new File(outDir, mod.project.slug + ".lock.hjson")
+            fw = new FileWriter(outLockHJson)
+            Util.gson.toJson(new ModLockHJson(mod), ModLockHJson.class, fw)
+            fw.close()
+            
+            File outEntryHJson = new File(outDir, mod.project.slug + ".entry.hjson")
+            fw = new FileWriter(outEntryHJson)
+            Util.gson.toJson(new ModEntryHJson(mod), ModEntryHJson.class, fw)
+            fw.close()
+        }
+    }
+}
+
+class Modpack {
+    String name
+    List<String> gameVersions = new ArrayList<>()
+    String forgeVersion
+    List<String> authors = new ArrayList<>()
+    List<String> releaseTypes = new ArrayList<>(Arrays.asList("RELEASE", "BETA", "ALPHA"))
+
+    List<ModpackMod> allMods = new ArrayList<>()
+
+    String getId(){
+        return name.toLowerCase(Locale.ENGLISH).replaceAll("[^0-9a-zA-z]", "")
+    }
+
+    static Modpack loadFromMaps(Map<String, Object> general, List<Map<String, Object>> mods){
+        Modpack modpack = new Modpack()
+
+        readGeneral(modpack, general)
+        Map<CurseProject, Map<String, Object>> allModsRaw = readMods(mods)
+        getSpecificMods(modpack, allModsRaw)
+
+        return modpack
+    }
+
+    static readGeneral(Modpack modpack, Map<String, Object> general){
+        for(Map.Entry<String, Object> entry : general.entrySet()){
+            if("ModpackName".equals(entry.getKey())){
+                modpack.name = entry.getValue()
+            }
+            if("ForgeVersion".equals(entry.getKey())){
+                modpack.forgeVersion = entry.getValue()
+            }
+            if("GameVersion".equals(entry.getKey())){
+                modpack.gameVersions.addAll(entry.getValue())
+            }
+            if("Authors".equals(entry.getKey())){
+                modpack.authors.addAll(entry.getValue())
+            }
+            if("ReleaseTypes".equals(entry.getKey())){
+                modpack.releaseTypes.clear()
+                modpack.releaseTypes.addAll(entry.getValue())
+            }
+        }
+    }
+
+    static Map<CurseProject, Map<String, Object>> readMods(List<Map<String, Object>> mods){
+        Map<CurseProject, Map<String, Object>> allMods = new HashMap<>()
+        CurseProject currentProject = null
+        Map<String, Object> currentMap = null
+        for(Map<String, Object> map : mods){
+            if(map.containsKey("Id")){
+                if(currentProject != null){
+                    allMods.put(currentProject, currentMap)
+                }
+                currentProject = Util.readOnlineJson(new URL("https://curse.nikky.moe/api/addon/" + map.get("Id")), CurseProject.class)
+                currentMap = map
+            }
+            if(map.containsKey("Slug")){
+                if(currentProject != null){
+                    allMods.put(currentProject, currentMap)
+                }
+                currentProject = Util.findCurseProjectBySlug(map.get("Slug"))
+                currentMap = map
+            }
+        }
+        if(currentProject != null){
+            allMods.put(currentProject, currentMap)
+        }
+        return allMods
+    }
+
+    static getSpecificMods(Modpack modpack, Map<CurseProject, Map<String, Object>> project) {
+        for (Map.Entry<CurseProject, Map<String, Object>> mod : project.entrySet()) {
+            int id = mod.getKey().getId()
+            List<CurseFile> allModFiles = Downloads.getFilesJsonFor(id)
+            if (allModFiles != null) {
+                List<CurseFile> filteredFiles = new ArrayList<>()
+                String filter = mod.getValue().get("FilterName")
+                List<String> releaseTypes = mod.getValue().getOrDefault("ReleaseTypes", modpack.releaseTypes)
+                for (CurseFile file : allModFiles) {
+                    if (!Collections.disjoint(modpack.gameVersions, file.gameVersion) && releaseTypes.contains(file.releaseType)) {
+                        if (filter != null) {
+                            if (file.fileName.contains(filter)) {
+                                filteredFiles.add(file)
+                            }
+                        } else {
+                            filteredFiles.add(file)
+                        }
+                    }
+                }
+                filteredFiles.sort(new Comparator<CurseFile>() {
+                    @Override
+                    int compare(CurseFile o1, CurseFile o2) {
+                        return o1.fileDate < o2.fileDate ? 1 : -1
+                    }
+                })
+                if(!filteredFiles.isEmpty()){
+                    ModpackMod modpackMod = new ModpackMod(mod.getKey(), filteredFiles.get(0))
+                    modpackMod.curseReleaseTypes = releaseTypes
+                    modpack.allMods.add(modpackMod)
+                } else {
+                    println "No suitable files found for '" + mod.getKey().getName() + "'"
+                }
+            }
+        }
+    }
+
+    @Override
+    String toString() {
+        return String.format("Modpack{name '%s' authors '%s' gameversions '%s' forge '%s' mods: %d}", name, authors, gameVersions, forgeVersion, allMods.size())
+    }
+}
+
+class Util {
+
+    static Gson gson = new GsonBuilder().setPrettyPrinting().create()
+
+    static CurseProject findCurseProjectBySlug(String slug){
+        int id = getIdFromSlug(slug)
+        if(id != -1){
+            Downloads.getFilesJsonFor(id)
+            return readOnlineJson(new URL("https://curse.nikky.moe/api/addon/" + id), CurseProject.class)
+        }
+        println "Mod couldn't be found! '" + slug + "'"
+        return null
+    }
+
+    static <T> T readOnlineJson(URL url, Class<T> type){
+        try {
+            String text = url.text
+            if(text != null){
+                return gson.fromJson(text, type)
+            }
+        } catch (Exception e){
+            e.printStackTrace()
+        }
+        return null
+    }
+
+    static int getIdFromSlug(String slug){
+        readMap()
+        return slug_id_map.getOrDefault(slug, -1)
+    }
+
+    static final File cachedFile = new File("cache", "slug.map.json")
+    static final Map<String, Integer> slug_id_map = new HashMap<>()
+
+    static void readMap() {
+        if (slug_id_map.isEmpty()) {
+            int id = -1
+            String onlineVersion = Downloads.getSlugIdMap()
+            for (String line : onlineVersion.split("\n")) {
+                if (!line.contains("{") && !line.contains("}")) {
+                    if (line.contains("\"id\"")) {
+                        id = Integer.parseInt(line.substring(line.indexOf(":") + 2, line.indexOf(",")))
+                    } else if (id != -1 && line.contains("\"slug\"")) {
+                        String slug = line.substring(line.indexOf(":") + 3, line.lastIndexOf("\""))
+                        slug_id_map.put(slug, id)
+                        id = -1
+                    }
+                }
+            }
+        }
+    }
+
+}
+
+class Downloads {
+
+    static String getSlugIdMap(){
+        URL url = new URL("https://curse.nikky.moe/graphql")
+        HttpURLConnection connection = ((HttpURLConnection)url.openConnection())
+        connection.setDoOutput(true)
+        connection.setDoInput(true)
+        connection.setRequestMethod("POST")
+        connection.setRequestProperty("Content-Type", "application/json")
+        byte[] outputInBytes = "{\"query\": \"{addons(gameID: 432) {id slug}}\"}".getBytes("UTF-8")
+        OutputStream os = connection.getOutputStream()
+        os.write(outputInBytes)
+        os.close()
+        return IOGroovyMethods.getText(connection.getInputStream())
+    }
+
+    static List<CurseFile> getFilesJsonFor(int id){
+        return Util.readOnlineJson(new URL("https://curse.nikky.moe/api/addon/" + id + "/files"), List.class)
+    }
+
+    static String readForgeVersions(){
+        return new URL("https://files.minecraftforge.net/maven/net/minecraftforge/forge/json").text
+    }
+
+}
+
+class ModpackMod {
+
+    CurseProject project
+    CurseFile file
+    String provider = "CURSE"
+    List<String> curseReleaseTypes
+    boolean optional, selected, client = true, server = true
+
+    ModpackMod(CurseProject project, CurseFile file) {
+        this.project = project
+        this.file = file
+    }
+
+    CurseProject getProject() {
+        return project
+    }
+
+    CurseFile getFile() {
+        return file
+    }
+    
+    void setOptional(boolean defaultSelected){
+        
+    }
+}
+
+class CurseProject {
+
+    int id
+    String name
+    List<CurseAuthor> authors
+    List<CurseAttachement> attachments
+    URL webSiteURL
+    int gameId
+    String summary
+    int defaultFileId
+    int commentCount
+    float downloadCount
+    int rating
+    int installCount
+    List<CurseFile> latestFiles
+    
+    String slug
+
+    @Override
+    String toString() {
+        return String.format("id: %d name: %s authors: %s attachments: %s", id, name, authors, attachments)
+    }
+}
+
+class CurseFile {
+
+    int id
+    String fileName
+    String fileNameOnDisk
+    long fileDate
+    String releaseType
+    String fileStatus
+    String downloadURL
+    int alternateFileId
+    List<CurseDependencies> dependencies
+    List<CurseModule> modules
+    long packageFingerprint
+    List<String> gameVersion
+    boolean alternate
+    boolean available
+
+    @Override
+    String toString() {
+        return String.format("CurseFile{id %d name (%s/%s) releaseType %s url %s gameversions %s}", id, fileName, fileNameOnDisk, releaseType, downloadURL, gameVersion)
+    }
+}
+
+class CurseModule {
+
+    long fingerprint
+    String foldername
+
+}
+
+class CurseDependencies {
+
+    int addOnId
+    String type
+
+}
+
+class CurseAuthor {
+
+    String name
+    URL url
+
+    @Override
+    String toString() {
+        return String.format("name: %s url: %s", name, url)
+    }
+}
+
+
+import com.google.gson.Gson
+import com.google.gson.GsonBuilder
+import com.google.gson.annotations.SerializedName
+import com.google.gson.stream.JsonWriter
+import org.apache.commons.io.FileUtils
+import org.codehaus.groovy.runtime.IOGroovyMethods
+
+class CurseAttachement {
+
+    int id
+    int projectId
+    String description
+    URL thumbnailUrl
+    String title
+    URL url
+    @SerializedName("default")
+    boolean isDefault
+
+}
+
+class LockHJson{
+    String id
+    String mcVersion
+    String title
+    String version
+    List<String> authors
+    String forge
+    LockHJson(Modpack modpack){
+        id = modpack.name.toLowerCase(Locale.ENGLISH).replaceAll("/([^0-9a-zA-z])/", "")
+        mcVersion = modpack.gameVersions.get(0)
+        title = modpack.name
+        version = ""
+        authors = modpack.authors
+        forge = modpack.forgeVersion
+    }
+}
+
+class LockJson extends LockHJson{
+    List<Object> features = new ArrayList<>()
+    LockJson(Modpack modpack){
+        super(modpack)
+    }
+}
+
+class ModLockHJson{
+    String provider
+    String id
+    String name
+    int projectID
+    int fileID
+
+    ModLockHJson(ModpackMod mod) {
+        this.provider = mod.provider
+        this.id = mod.project.slug
+        this.name = mod.project.name
+        this.projectID = mod.project.id
+        this.fileID = mod.file.id
+    }
+}
+
+class ModEntryHJson{
+    String provider
+    String id
+    List<String> validMcVersions
+    List<String> curseReleaseTypes
+
+    ModEntryHJson(ModpackMod mod) {
+        this.provider = mod.provider
+        this.id = mod.project.slug
+        this.validMcVersions = mod.file.gameVersion
+        this.curseReleaseTypes = mod.curseReleaseTypes
+    }
+}
